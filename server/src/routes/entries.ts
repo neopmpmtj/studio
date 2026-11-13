@@ -3,7 +3,7 @@ import { readFile, stat } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
 import { pool } from '../db/client'
-import { cropPcm, readWav, sliceSeries, writeWav } from '../services/crop'
+import { assembleSeries, cropPcm, readWav, writeWav } from '../services/crop'
 import {
   clipFileUrl,
   isUuid,
@@ -73,11 +73,10 @@ function readKeep(raw: unknown, duration: number): KeepSpan[] | null {
     if (typeof start !== 'number' || typeof end !== 'number') return null
     if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null
     if (start < -1e-6 || end > duration + 1e-3) return null
-    spans.push({ start: Math.max(0, start), end: Math.min(duration, end) })
-  }
-  spans.sort((a, b) => a.start - b.start)
-  for (let i = 1; i < spans.length; i++) {
-    if (spans[i].start < spans[i - 1].end - 1e-6) return null
+    const a = Math.max(0, start)
+    const b = Math.min(duration, end)
+    if (b <= a) return null
+    spans.push({ start: a, end: b })
   }
   return spans
 }
@@ -245,8 +244,8 @@ export const entriesRoutes: FastifyPluginAsync = async (app) => {
     if (pcm.length < 2) return reply.code(400).send({ error: 'invalid crop' })
     const nextWav = writeWav(pcm, wav.sampleRate)
     const durationS = pcm.length / 2 / wav.sampleRate
-    const samples = sliceSeries(asSamples(row.samples), duration, keep, false)
-    const waveform = row.waveform == null ? null : sliceSeries(asSamples(row.waveform), duration, keep, true)
+    const samples = assembleSeries(asSamples(row.samples), duration, keep, false)
+    const waveform = row.waveform == null ? null : assembleSeries(asSamples(row.waveform), duration, keep, true)
     const waveformJson = waveform == null ? null : JSON.stringify(waveform)
 
     if (mode === 'overwrite') {

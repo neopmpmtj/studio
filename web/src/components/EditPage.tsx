@@ -1,8 +1,8 @@
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState, type MouseEvent, type RefObject } from 'react'
 import uPlot from 'uplot'
 import 'uplot/dist/uPlot.min.css'
-import { cropPcm, parseWavPcm, sliceSeries } from '../../../shared/crop'
-import { keptSpans, type EntryDetail, type KeepSpan } from '../../../shared/types'
+import { assembleSeries, cropPcm, cutPieces, insertPieces, parseWavPcm, piecesDuration, takePieces } from '../../../shared/crop'
+import { type EntryDetail, type KeepSpan } from '../../../shared/types'
 import { useStore } from '../store/settings'
 
 const HEIGHT = 240
@@ -20,8 +20,7 @@ type FastTool = 'delete' | 'play' | 'select' | 'zoom'
 type SelectionMark = { index: number; start: number; end: number }
 
 type Snap = {
-  trim: { start: number; end: number }
-  applied: KeepSpan[]
+  pieces: KeepSpan[]
   pending: KeepSpan[]
 }
 
@@ -38,7 +37,8 @@ type Drawn = {
 
 type WavPcm = { pcm: Uint8Array; sampleRate: number }
 
-const EMPTY: Snap = { trim: { start: 0, end: 0 }, applied: [], pending: [] }
+const EMPTY: Snap = { pieces: [], pending: [] }
+const MAX_PIECES = 100
 
 function formatSec(seconds: number) {
   return `${seconds.toFixed(2)} s`
@@ -63,50 +63,38 @@ function mergeCuts(cuts: KeepSpan[]): KeepSpan[] {
   return out
 }
 
-function clampCuts(cuts: KeepSpan[], start: number, end: number): KeepSpan[] {
-  const next = cuts
-    .map((cut) => ({ start: Math.max(cut.start, start), end: Math.min(cut.end, end) }))
-    .filter((cut) => cut.end - cut.start >= MIN_CUT)
-  if (next.length === cuts.length && next.every((cut, i) => cut.start === cuts[i].start && cut.end === cuts[i].end)) {
-    return cuts
-  }
-  return next
-}
-
 function sameSpans(a: KeepSpan[], b: KeepSpan[]) {
   return a.length === b.length && a.every((span, i) => span.start === b[i].start && span.end === b[i].end)
 }
 
 function sameSnap(a: Snap, b: Snap) {
-  return a.trim.start === b.trim.start && a.trim.end === b.trim.end && sameSpans(a.applied, b.applied) && sameSpans(a.pending, b.pending)
+  return sameSpans(a.pieces, b.pieces) && sameSpans(a.pending, b.pending)
 }
 
-function originalAt(previewT: number, keep: KeepSpan[]) {
-  if (keep.length === 0) return 0
-  let cursor = 0
-  for (let i = 0; i < keep.length; i++) {
-    const span = keep[i]
-    const len = span.end - span.start
-    if (i === keep.length - 1 || previewT < cursor + len) {
-      return Math.min(span.end, Math.max(span.start, span.start + (previewT - cursor)))
-    }
-    cursor += len
+function shiftPending(pending: KeepSpan[], start: number, end: number): KeepSpan[] {
+  const a = Math.min(start, end)
+  const b = Math.max(start, end)
+  const cut = b - a
+  if (!(cut > 0)) return pending
+  const out: KeepSpan[] = []
+  for (const span of pending) {
+    if (span.end <= a) out.push(span)
+    else if (span.start >= b) out.push({ start: span.start - cut, end: span.end - cut })
   }
-  return keep[keep.length - 1].end
+  return out
 }
 
-function previewAt(originalT: number, keep: KeepSpan[]) {
-  let cursor = 0
-  for (const span of keep) {
-    if (originalT <= span.start) return cursor
-    if (originalT <= span.end) return cursor + (originalT - span.start)
-    cursor += span.end - span.start
-  }
-  return cursor
+function nudgePending(pending: KeepSpan[], at: number, added: number): KeepSpan[] {
+  if (!(added > 0)) return pending
+  return pending.map((span) => {
+    if (span.end <= at) return span
+    if (span.start >= at) return { start: span.start + added, end: span.end + added }
+    return { start: span.start, end: span.end + added }
+  })
 }
 
-function isEdited(snap: Snap, duration: number) {
-  return snap.applied.length > 0 || snap.trim.start > 1e-6 || snap.trim.end < duration - 1e-3
+function isEdited(pieces: KeepSpan[], duration: number) {
+  return !(pieces.length === 1 && pieces[0].start <= 1e-6 && pieces[0].end >= duration - 1e-3)
 }
 
 function wavBlob(pcm: Uint8Array, sampleRate: number) {
@@ -140,7 +128,7 @@ function seriesFor(detail: EntryDetail, gain: number, keep: KeepSpan[], keptS: n
   const maxT = Math.max(keptS, 0.001)
   const wave = detail.waveform
   if (wave && wave.length >= 2) {
-    const sliced = sliceSeries(wave, detail.durationS, keep, true)
+    const sliced = assembleSeries(wave, detail.durationS, keep, true)
     const pairs = sliced.length / 2
     if (pairs >= 1) {
       const step = maxT / pairs
@@ -160,7 +148,7 @@ function seriesFor(detail: EntryDetail, gain: number, keep: KeepSpan[], keptS: n
     return flatSeries(maxT, 'Waveform', '#7dd3fc')
   }
   if (detail.samples.length > 0) {
-    const sliced = sliceSeries(detail.samples, detail.durationS, keep, false)
+    const sliced = assembleSeries(detail.samples, detail.durationS, keep, false)
     const yOf = (v: number) => Math.min(1, Math.max(0, v * gain))
     if (sliced.length === 1) {
       const y = yOf(sliced[0])
@@ -194,14 +182,16 @@ const CropChart = forwardRef<
     onTrim: (start: number, end: number) => void
     onSelect: (start: number, end: number) => void
     onResize: (index: number, start: number, end: number) => void
+    onPaste: (at: number) => void
+    placing: boolean
   }
->(function CropChart({ audioRef, series, maxT, selections, onTrim, onSelect, onResize }, ref) {
+>(function CropChart({ audioRef, series, maxT, selections, onTrim, onSelect, onResize, onPaste, placing }, ref) {
   const box = useRef<HTMLDivElement>(null)
   const plotRef = useRef<uPlot | null>(null)
   const seriesRef = useRef(series)
   const maxTRef = useRef(maxT)
   const selectionsRef = useRef(selections)
-  const cb = useRef({ onTrim, onSelect, onResize })
+  const cb = useRef({ onTrim, onSelect, onResize, onPaste, placing })
   const viewRef = useRef({ start: 0, end: maxT })
   const [ready, setReady] = useState(0)
   const [view, setView] = useState({ start: 0, end: maxT })
@@ -210,7 +200,7 @@ const CropChart = forwardRef<
   seriesRef.current = series
   maxTRef.current = maxT
   selectionsRef.current = selections
-  cb.current = { onTrim, onSelect, onResize }
+  cb.current = { onTrim, onSelect, onResize, onPaste, placing }
   const look = `${series.stroke}|${series.width}|${series.fill ?? ''}`
 
   const applyView = (next: { start: number; end: number }) => {
@@ -326,6 +316,7 @@ const CropChart = forwardRef<
       index: number
     } | null = null
     const down = (e: PointerEvent) => {
+      if (e.button !== 0) return
       const target = e.target as HTMLElement
       const handle = target.dataset.crop
       const t = timeAt(e.clientX)
@@ -373,6 +364,8 @@ const CropChart = forwardRef<
         setDragSel(null)
       } else if (drag.moved) {
         cb.current.onSelect(Math.min(drag.t0, t), Math.max(drag.t0, t))
+      } else if (cb.current.placing) {
+        cb.current.onPaste(t)
       } else if (audioRef.current?.src) {
         audioRef.current.currentTime = t
         placeHead()
@@ -534,7 +527,9 @@ export default function EditPage({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [editorMode, setEditorMode] = useState<EditorMode>('normal')
-  const [fastTool, setFastTool] = useState<FastTool>('select')
+  const [fastTool, setFastTool] = useState<FastTool>('play')
+  const [hasClip, setHasClip] = useState(false)
+  const [pasteArmed, setPasteArmed] = useState(false)
   const audioRef = useRef<HTMLAudioElement>(null)
   const chartRef = useRef<ChartHandle>(null)
   const playUntil = useRef<number | null>(null)
@@ -543,11 +538,10 @@ export default function EditPage({
   const armingPlay = useRef(false)
   const snapRef = useRef(snap)
   const pastRef = useRef(past)
-  const detailRef = useRef(detail)
   const previewUrl = useRef<string | null>(null)
+  const clipRef = useRef<KeepSpan[] | null>(null)
   snapRef.current = snap
   pastRef.current = past
-  detailRef.current = detail
 
   useEffect(() => {
     if (!valid) return
@@ -562,14 +556,17 @@ export default function EditPage({
     setSnap(EMPTY)
     setPast([])
     setEditorMode('normal')
-    setFastTool('select')
+    setFastTool('play')
+    clipRef.current = null
+    setHasClip(false)
+    setPasteArmed(false)
     fetch(`/api/entries/${id}`, { signal: ac.signal })
       .then(async (r) => {
         if (!r.ok) throw new Error('missing')
         return (await r.json()) as EntryDetail
       })
       .then((row) => {
-        const initial = { trim: { start: 0, end: row.durationS }, applied: [], pending: [] }
+        const initial = { pieces: [{ start: 0, end: row.durationS }], pending: [] }
         snapRef.current = initial
         pastRef.current = []
         setSnap(initial)
@@ -609,22 +606,19 @@ export default function EditPage({
     }
   }, [detail])
 
-  const keep = useMemo(
-    () => (detail ? keptSpans(snap.trim.start, snap.trim.end, snap.applied) : []),
-    [detail, snap.trim.start, snap.trim.end, snap.applied],
-  )
-  const keptS = keep.reduce((sum, span) => sum + (span.end - span.start), 0)
+  const keep = detail ? snap.pieces : []
+  const keptS = piecesDuration(keep)
   const series = useMemo(() => (detail ? seriesFor(detail, gain, keep, keptS) : null), [detail, gain, keep, keptS])
   const selections = useMemo(() => {
     if (!detail) return []
     return snap.pending.map((cut, index) => ({
       index,
-      start: previewAt(cut.start, keep),
-      end: previewAt(cut.end, keep),
-      blocked: keptSpans(snap.trim.start, snap.trim.end, mergeCuts([...snap.applied, cut])).length === 0,
+      start: cut.start,
+      end: cut.end,
+      blocked: piecesDuration(cutPieces(keep, cut.start, cut.end)) < 1e-4,
     }))
-  }, [detail, snap.pending, snap.applied, snap.trim.start, snap.trim.end, keep])
-  const edited = detail ? isEdited(snap, detail.durationS) : false
+  }, [detail, snap.pending, keep])
+  const edited = detail ? isEdited(keep, detail.durationS) : false
   const back = `/recordings?open=${id}`
   const shownSrc = useRef('')
 
@@ -679,19 +673,26 @@ export default function EditPage({
   }
 
   function onTrim(previewStart: number, previewEnd: number) {
-    const row = detailRef.current
     const cur = snapRef.current
-    if (!row) return
-    const base = keptSpans(cur.trim.start, cur.trim.end, cur.applied)
-    const start = originalAt(Math.min(previewStart, previewEnd), base)
-    const end = originalAt(Math.max(previewStart, previewEnd), base)
-    const minKeep = Math.min(0.05, row.durationS / 2)
+    const total = piecesDuration(cur.pieces)
+    const start = Math.max(0, Math.min(previewStart, previewEnd))
+    const end = Math.min(total, Math.max(previewStart, previewEnd))
+    const minKeep = Math.min(0.05, total / 2)
     if (!(end - start >= minKeep)) return
-    const applied = clampCuts(cur.applied, start, end)
-    const pending = clampCuts(cur.pending, start, end)
-    const nextKeep = keptSpans(start, end, applied)
-    if (sameSpans(nextKeep, base) && sameSpans(pending, cur.pending)) return
-    push({ trim: { start, end }, applied, pending })
+    let pieces = cur.pieces
+    let pending = cur.pending
+    if (start > 1e-6) {
+      pending = shiftPending(pending, 0, start)
+      pieces = cutPieces(pieces, 0, start)
+    }
+    const right = end - Math.min(start, total)
+    const mid = piecesDuration(pieces)
+    if (mid - right > 1e-6) {
+      pending = shiftPending(pending, right, mid)
+      pieces = cutPieces(pieces, right, mid)
+    }
+    if (sameSpans(pieces, cur.pieces) && sameSpans(pending, cur.pending)) return
+    push({ pieces, pending })
   }
 
   function onSelect(previewStart: number, previewEnd: number) {
@@ -707,30 +708,45 @@ export default function EditPage({
       return
     }
     const cur = snapRef.current
-    const base = keptSpans(cur.trim.start, cur.trim.end, cur.applied)
-    const a = originalAt(start, base)
-    const b = originalAt(end, base)
-    if (b - a < MIN_CUT) return
     if (editorMode === 'fast' && fastTool === 'delete') {
-      const applied = mergeCuts([...cur.applied, { start: a, end: b }])
-      if (keptSpans(cur.trim.start, cur.trim.end, applied).length === 0) return
-      push({ trim: cur.trim, applied, pending: cur.pending })
+      const pieces = cutPieces(cur.pieces, start, end)
+      if (piecesDuration(pieces) < 1e-4) return
+      push({ pieces, pending: shiftPending(cur.pending, start, end) })
       return
     }
-    const pending = mergeCuts([...cur.pending, { start: a, end: b }])
+    const pending = mergeCuts([...cur.pending, { start, end }])
     if (sameSpans(pending, cur.pending)) return
-    push({ trim: cur.trim, applied: cur.applied, pending })
+    push({ pieces: cur.pieces, pending })
   }
 
   function onResize(index: number, previewStart: number, previewEnd: number) {
     const cur = snapRef.current
-    const base = keptSpans(cur.trim.start, cur.trim.end, cur.applied)
-    const start = originalAt(Math.min(previewStart, previewEnd), base)
-    const end = originalAt(Math.max(previewStart, previewEnd), base)
+    const start = Math.min(previewStart, previewEnd)
+    const end = Math.max(previewStart, previewEnd)
     if (end - start < MIN_CUT) return
     const pending = mergeCuts(cur.pending.map((span, i) => (i === index ? { start, end } : span)))
     if (sameSpans(pending, cur.pending)) return
-    push({ trim: cur.trim, applied: cur.applied, pending })
+    push({ pieces: cur.pieces, pending })
+  }
+
+  function copySelection() {
+    const cur = snapRef.current
+    const spans = [...cur.pending].sort((a, b) => a.start - b.start)
+    const clip = spans.flatMap((span) => takePieces(cur.pieces, span.start, span.end))
+    if (clip.length === 0) return
+    clipRef.current = clip
+    setHasClip(true)
+  }
+
+  function onPaste(at: number) {
+    setPasteArmed(false)
+    const clip = clipRef.current
+    if (!clip || clip.length === 0) return
+    const cur = snapRef.current
+    const pieces = insertPieces(cur.pieces, at, clip)
+    if (pieces.length > MAX_PIECES || sameSpans(pieces, cur.pieces)) return
+    const added = piecesDuration(pieces) - piecesDuration(cur.pieces)
+    push({ pieces, pending: nudgePending(cur.pending, at, added) })
   }
 
   function stopSpanPlay() {
@@ -821,14 +837,25 @@ export default function EditPage({
     }
   }, [detail])
 
+  function clearAt(index: number) {
+    const cur = snapRef.current
+    if (!cur.pending[index]) return
+    push({ pieces: cur.pieces, pending: cur.pending.filter((_, i) => i !== index) })
+  }
+
+  function clearSelections() {
+    const cur = snapRef.current
+    if (cur.pending.length === 0) return
+    push({ pieces: cur.pieces, pending: [] })
+  }
+
   function removeAt(index: number) {
     const cur = snapRef.current
     const cut = cur.pending[index]
     if (!cut) return
-    const applied = mergeCuts([...cur.applied, cut])
-    const pending = cur.pending.filter((_, i) => i !== index)
-    if (keptSpans(cur.trim.start, cur.trim.end, applied).length === 0) return
-    push({ trim: cur.trim, applied, pending })
+    const pieces = cutPieces(cur.pieces, cut.start, cut.end)
+    if (piecesDuration(pieces) < 1e-4) return
+    push({ pieces, pending: shiftPending(cur.pending, cut.start, cut.end) })
   }
 
   async function save(mode: 'overwrite' | 'copy') {
@@ -874,7 +901,16 @@ export default function EditPage({
             <button type="button" className="small" aria-pressed={editorMode === 'normal'} onClick={() => setEditorMode('normal')}>
               Normal
             </button>
-            <button type="button" className="small" aria-pressed={editorMode === 'fast'} onClick={() => setEditorMode('fast')}>
+            <button
+              type="button"
+              className="small"
+              aria-pressed={editorMode === 'fast'}
+              onClick={() => {
+                setPasteArmed(false)
+                setFastTool('play')
+                setEditorMode('fast')
+              }}
+            >
               Move fast
             </button>
           </div>
@@ -894,6 +930,23 @@ export default function EditPage({
               </button>
             </div>
           )}
+          {editorMode === 'normal' && (
+            <div className="row">
+              <button type="button" className="small" disabled={selections.length === 0 || busy} onClick={copySelection}>
+                Copy
+              </button>
+              <button
+                type="button"
+                className="small"
+                disabled={!hasClip || busy}
+                aria-pressed={pasteArmed}
+                onClick={() => setPasteArmed((armed) => !armed)}
+              >
+                Paste
+              </button>
+            </div>
+          )}
+          {pasteArmed && <p className="muted">Click the chart where the copy should be inserted.</p>}
           <CropChart
             ref={chartRef}
             audioRef={audioRef}
@@ -903,25 +956,37 @@ export default function EditPage({
             onTrim={onTrim}
             onSelect={onSelect}
             onResize={onResize}
+            onPaste={onPaste}
+            placing={pasteArmed}
           />
           {selections.length > 0 ? (
-            <ul>
-              {selections.map((sel) => (
-                <li key={`${sel.index}-${sel.start}-${sel.end}`}>
-                  <span>
-                    Selected {formatSec(sel.start)} – {formatSec(sel.end)}
-                  </span>
-                  <span className="row">
-                    <button type="button" className="small" disabled={fileMissing || busy} onClick={() => playSpan(sel.start, sel.end)}>
-                      Play
-                    </button>
-                    <button type="button" className="small" disabled={sel.blocked || busy} onClick={() => removeAt(sel.index)}>
-                      Remove
-                    </button>
-                  </span>
-                </li>
-              ))}
-            </ul>
+            <>
+              <div className="row">
+                <button type="button" className="small" disabled={busy} onClick={clearSelections}>
+                  Clear selection
+                </button>
+              </div>
+              <ul>
+                {selections.map((sel) => (
+                  <li key={`${sel.index}-${sel.start}-${sel.end}`}>
+                    <span>
+                      Selected {formatSec(sel.start)} – {formatSec(sel.end)}
+                    </span>
+                    <span className="row">
+                      <button type="button" className="small" disabled={busy} onClick={() => clearAt(sel.index)}>
+                        Clear
+                      </button>
+                      <button type="button" className="small" disabled={fileMissing || busy} onClick={() => playSpan(sel.start, sel.end)}>
+                        Play
+                      </button>
+                      <button type="button" className="small" disabled={sel.blocked || busy} onClick={() => removeAt(sel.index)}>
+                        Remove
+                      </button>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </>
           ) : (
             <p className="muted">
               {editorMode === 'fast' && fastTool === 'delete'

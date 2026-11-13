@@ -16,6 +16,110 @@ export function sliceSeries(values: number[], duration: number, keep: KeepSpan[]
   return out
 }
 
+const JOIN = 1e-6
+
+function mergeNeighbors(pieces: KeepSpan[]): KeepSpan[] {
+  const out: KeepSpan[] = []
+  for (const piece of pieces) {
+    if (!(piece.end - piece.start > 1e-9)) continue
+    const last = out[out.length - 1]
+    if (last && Math.abs(last.end - piece.start) <= JOIN) last.end = Math.max(last.end, piece.end)
+    else out.push({ start: piece.start, end: piece.end })
+  }
+  return out
+}
+
+export function piecesDuration(pieces: KeepSpan[]) {
+  return pieces.reduce((sum, piece) => sum + Math.max(0, piece.end - piece.start), 0)
+}
+
+export function cutPieces(pieces: KeepSpan[], start: number, end: number): KeepSpan[] {
+  const a = Math.min(start, end)
+  const b = Math.max(start, end)
+  if (!(b > a)) return pieces.map((piece) => ({ start: piece.start, end: piece.end }))
+  const out: KeepSpan[] = []
+  let cursor = 0
+  for (const piece of pieces) {
+    const len = piece.end - piece.start
+    const ps = cursor
+    const pe = cursor + len
+    cursor = pe
+    if (pe <= a || ps >= b) {
+      out.push({ start: piece.start, end: piece.end })
+      continue
+    }
+    if (ps < a) out.push({ start: piece.start, end: piece.start + (a - ps) })
+    if (pe > b) out.push({ start: piece.start + (b - ps), end: piece.end })
+  }
+  return mergeNeighbors(out)
+}
+
+export function takePieces(pieces: KeepSpan[], start: number, end: number): KeepSpan[] {
+  const a = Math.min(start, end)
+  const b = Math.max(start, end)
+  const out: KeepSpan[] = []
+  let cursor = 0
+  for (const piece of pieces) {
+    const len = piece.end - piece.start
+    const ps = cursor
+    const pe = cursor + len
+    cursor = pe
+    const lo = Math.max(ps, a)
+    const hi = Math.min(pe, b)
+    if (!(hi > lo)) continue
+    out.push({ start: piece.start + (lo - ps), end: piece.start + (hi - ps) })
+  }
+  return mergeNeighbors(out)
+}
+
+export function insertPieces(pieces: KeepSpan[], at: number, clip: KeepSpan[]): KeepSpan[] {
+  const copied = clip
+    .filter((piece) => piece.end - piece.start > 1e-9)
+    .map((piece) => ({ start: piece.start, end: piece.end }))
+  if (copied.length === 0) return pieces.map((piece) => ({ start: piece.start, end: piece.end }))
+  const total = piecesDuration(pieces)
+  const t = Math.min(total, Math.max(0, at))
+  if (pieces.length === 0 || t >= total - 1e-9) {
+    return mergeNeighbors([...pieces.map((piece) => ({ start: piece.start, end: piece.end })), ...copied])
+  }
+  const out: KeepSpan[] = []
+  let cursor = 0
+  let placed = false
+  for (const piece of pieces) {
+    const len = piece.end - piece.start
+    const ps = cursor
+    cursor += len
+    if (placed || t >= cursor) {
+      out.push({ start: piece.start, end: piece.end })
+      continue
+    }
+    const split = t - ps
+    if (split > 1e-9) out.push({ start: piece.start, end: piece.start + split })
+    out.push(...copied.map((part) => ({ start: part.start, end: part.end })))
+    if (len - split > 1e-9) out.push({ start: piece.start + split, end: piece.end })
+    placed = true
+  }
+  return mergeNeighbors(out)
+}
+
+// Buckets are appended in piece order, so a repeated source range appears twice.
+export function assembleSeries(values: number[], duration: number, pieces: KeepSpan[], pair: boolean): number[] {
+  if (values.length === 0 || duration <= 0 || pieces.length === 0) return []
+  const count = pair ? values.length / 2 : values.length
+  if (!Number.isInteger(count) || count < 1) return []
+  const step = duration / count
+  const out: number[] = []
+  for (const piece of pieces) {
+    for (let i = 0; i < count; i++) {
+      const t = (i + 0.5) * step
+      if (t < piece.start || t >= piece.end) continue
+      if (pair) out.push(values[i * 2], values[i * 2 + 1])
+      else out.push(values[i])
+    }
+  }
+  return out
+}
+
 export function cropPcm(pcm: Uint8Array, sampleRate: number, keep: KeepSpan[]): Uint8Array {
   const n = Math.floor(pcm.length / 2)
   const parts: Uint8Array[] = []

@@ -1,7 +1,7 @@
 import type { KeepSpan } from '../../../shared/types'
-import { cropPcm as cutPcm, parseWavPcm, sliceSeries } from '../../../shared/crop'
+import { assembleSeries, cropPcm as cutPcm, parseWavPcm, sliceSeries } from '../../../shared/crop'
 
-export { sliceSeries }
+export { assembleSeries, sliceSeries }
 
 export function readWav(bytes: Buffer): { pcm: Buffer; sampleRate: number } {
   const parsed = parseWavPcm(bytes)
