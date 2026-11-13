@@ -18,6 +18,21 @@ export const SETTING_LIMITS: Record<keyof Settings, { min: number; max: number }
   smoothing: { min: 0, max: 0.95 },
 }
 
+export interface Preset {
+  id: string
+  name: string
+  builtin: boolean
+  settings: Settings
+}
+
+export const BUILTIN_PRESETS: Preset[] = [
+  { id: 'peaks', name: 'Peaks', builtin: true, settings: { gain: 2.5, windowSeconds: 5, smoothing: 0 } },
+  { id: 'speech', name: 'Speech', builtin: true, settings: { gain: 5, windowSeconds: 15, smoothing: 0.85 } },
+  { id: 'music', name: 'Music', builtin: true, settings: { gain: 2, windowSeconds: 30, smoothing: 0.75 } },
+  { id: 'room', name: 'Room', builtin: true, settings: { gain: 8, windowSeconds: 60, smoothing: 0.95 } },
+  { id: 'monitor', name: 'Monitor', builtin: true, settings: { gain: 3, windowSeconds: 21, smoothing: 0.6 } },
+]
+
 // Keeps only known keys and clamps values into their allowed range.
 export function sanitize(patch: Partial<Settings> | null | undefined): Partial<Settings> {
   const out: Partial<Settings> = {}
@@ -47,8 +62,17 @@ export interface NewEntry {
   samples: number[]
 }
 
+export interface EntryUpload extends NewEntry {
+  uuid: string
+}
+
 export interface EntrySummary {
   id: number
   startedAt: string
   durationS: number
+  audioPath: string | null
+}
+
+export interface EntryDetail extends EntrySummary {
+  samples: number[]
 }

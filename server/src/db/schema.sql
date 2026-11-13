@@ -7,5 +7,8 @@ CREATE TABLE IF NOT EXISTS entries (
   id          serial PRIMARY KEY,
   started_at  timestamptz NOT NULL,
   duration_s  double precision NOT NULL,
-  samples     jsonb NOT NULL
+  samples     jsonb NOT NULL,
+  audio_path  text
 );
+
+ALTER TABLE entries ADD COLUMN IF NOT EXISTS audio_path text;
