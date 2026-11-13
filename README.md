@@ -33,7 +33,7 @@ npm run dev
 
 The browser will ask for microphone access. Start a recording, stop it, and the take is stored. Recent recordings show start time and duration and open in Recordings. Labels are edited locally and written only when you press Save.
 
-Recordings (`/recordings`) lists saved takes, plays a take, and deletes one or many. Edit opens a crop page for that take. Save rewrites it in place. Save as writes the same folders and filename under `modified/`, so `clips/audio/<uuid>/<uuid>.wav` becomes `modified/clips/audio/<uuid>/<uuid>.wav`. A take saved from now on draws its waveform. Older takes still draw the loudness trace. Last N shows only the newest takes. Paged walks the full list.
+Recordings (`/recordings`) lists saved takes, plays a take, and deletes one or many. Edit opens a crop page for that take. Save rewrites it in place. Save as asks where to write the copy, starting from `clips/audio/modified/<uuid>/<uuid>.wav`. A take saved from now on draws its waveform. Older takes still draw the loudness trace. Last N shows only the newest takes. Paged walks the full list.
 
 Loudness gain, loudness window, and loudness smoothing are on `/controls`. A slider change applies immediately. The loudness graph reads gain and the time window every frame; smoothing is read every frame of a capture. These sliders do not change the waveform. Choosing a preset does not move the sliders. Reset applies the selected preset. Five built-ins ship with the app: Peaks, Speech, Music, Room, and Monitor. Save stores the current slider values under a name (max 20 saved presets, names trimmed to 40 characters). Built-ins cannot be removed.
 

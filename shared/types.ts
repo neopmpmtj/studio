@@ -92,6 +92,7 @@ export interface KeepSpan {
 export interface CropRequest {
   mode: 'overwrite' | 'copy'
   keep: KeepSpan[]
+  audioPath?: string
 }
 
 // Trim plus middle cuts, in original-timeline seconds. Cuts may overlap.

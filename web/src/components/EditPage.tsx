@@ -3,7 +3,9 @@ import uPlot from 'uplot'
 import 'uplot/dist/uPlot.min.css'
 import { assembleSeries, cropPcm, cutPieces, insertPieces, parseWavPcm, piecesDuration, takePieces } from '../../../shared/crop'
 import { type EntryDetail, type KeepSpan } from '../../../shared/types'
+import { isAllowedCopyPath, modifiedCopyPath } from '../../../shared/clip-path'
 import { useStore } from '../store/settings'
+import { nativeControlsList, PlaybackRate } from './PlaybackRate'
 
 const HEIGHT = 240
 const MIN_CUT = 0.02
@@ -46,10 +48,6 @@ function formatSec(seconds: number) {
 
 function when(iso: string) {
   return new Date(iso).toLocaleString()
-}
-
-function saveAsTarget(audioPath: string) {
-  return audioPath.toLowerCase().startsWith('modified/') ? audioPath : `modified/${audioPath}`
 }
 
 function mergeCuts(cuts: KeepSpan[]): KeepSpan[] {
@@ -527,6 +525,7 @@ export default function EditPage({
   const [wav, setWav] = useState<WavPcm | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [saveAsPath, setSaveAsPath] = useState<string | null>(null)
   const [editorMode, setEditorMode] = useState<EditorMode>('normal')
   const [fastTool, setFastTool] = useState<FastTool>('play')
   const [hasClip, setHasClip] = useState(false)
@@ -565,6 +564,7 @@ export default function EditPage({
     clipRef.current = null
     setHasClip(false)
     setPasteArmed(false)
+    setSaveAsPath(null)
     fetch(`/api/entries/${id}`, { signal: ac.signal })
       .then(async (r) => {
         if (!r.ok) throw new Error('missing')
@@ -626,8 +626,13 @@ export default function EditPage({
     }))
   }, [detail, snap.pending, keep])
   const edited = detail ? isEdited(keep, detail.durationS) : false
+  const canSave = edited && !busy && !fileMissing && keep.length > 0
   const back = `/recordings?open=${id}`
   const shownSrc = useRef('')
+
+  useEffect(() => {
+    if (!edited) setSaveAsPath(null)
+  }, [edited])
 
   useEffect(() => {
     const audio = audioRef.current
@@ -881,7 +886,18 @@ export default function EditPage({
     push({ pieces, pending: shiftPending(cur.pending, cut.start, cut.end) })
   }
 
-  async function save(mode: 'overwrite' | 'copy') {
+  function askSaveAs() {
+    if (!detail?.audioPath) return
+    const dest = modifiedCopyPath(detail.audioPath)
+    if (!dest) {
+      setError('Could not save the crop.')
+      return
+    }
+    setError('')
+    setSaveAsPath(dest)
+  }
+
+  async function save(mode: 'overwrite' | 'copy', audioPath?: string) {
     if (!detail || keep.length === 0) return
     setBusy(true)
     setError('')
@@ -889,7 +905,7 @@ export default function EditPage({
       const res = await fetch(`/api/entries/${detail.id}/crop`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ mode, keep }),
+        body: JSON.stringify({ mode, keep, ...(mode === 'copy' ? { audioPath } : {}) }),
       })
       if (!res.ok) throw new Error('save failed')
       const body = (await res.json()) as { id: number }
@@ -899,6 +915,16 @@ export default function EditPage({
     } finally {
       setBusy(false)
     }
+  }
+
+  function confirmSaveAs() {
+    if (saveAsPath == null) return
+    const dest = saveAsPath.trim()
+    if (!isAllowedCopyPath(dest)) {
+      setError('Save under clips/audio/modified/ and end the name with .wav.')
+      return
+    }
+    void save('copy', dest)
   }
 
   if (!valid || missing) {
@@ -1032,19 +1058,50 @@ export default function EditPage({
             <button type="button" className="small" disabled={busy} onClick={() => go(null, back)}>
               Cancel
             </button>
-            <button type="button" disabled={busy || fileMissing || keep.length === 0} onClick={() => void save('overwrite')}>
+            <button type="button" className="small" disabled={!canSave} onClick={() => void save('overwrite')}>
               Save
             </button>
-            <button type="button" className="small" disabled={busy || fileMissing || keep.length === 0} onClick={() => void save('copy')}>
+            <button type="button" disabled={!canSave} onClick={askSaveAs}>
               Save as
             </button>
           </div>
-          {detail.audioPath && <p className="muted">Save as: {saveAsTarget(detail.audioPath)}</p>}
+          {saveAsPath != null && (
+            <form
+              className="save-as"
+              onSubmit={(e) => {
+                e.preventDefault()
+                confirmSaveAs()
+              }}
+            >
+              <textarea
+                aria-label="Save location"
+                rows={2}
+                value={saveAsPath}
+                spellCheck={false}
+                autoFocus
+                onChange={(e) => setSaveAsPath(e.target.value)}
+              />
+              <div className="row">
+                <button type="submit" className="small" disabled={busy || saveAsPath.trim() === ''}>
+                  Confirm
+                </button>
+                <button type="button" className="small" disabled={busy} onClick={() => setSaveAsPath(null)}>
+                  Cancel
+                </button>
+              </div>
+            </form>
+          )}
           {error && <p className="error">{error}</p>}
+          {detail.audioPath && !fileMissing && (
+            <div className="row">
+              <PlaybackRate audioRef={audioRef} />
+            </div>
+          )}
           <audio
             ref={audioRef}
             className="clip"
             controls
+            controlsList={nativeControlsList}
             onError={() => {
               const src = audioRef.current?.getAttribute('src') ?? ''
               if (src.startsWith('blob:')) return

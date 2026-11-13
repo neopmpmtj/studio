@@ -53,6 +53,12 @@ li { display: flex; justify-content: space-between; gap: 8px; padding: 6px 10px;
 .rec-list a { color: inherit; text-decoration: none; }
 .rec-list a:hover { text-decoration: underline; }
 audio.clip { width: 100%; margin: 8px 0 12px; }
+label.speed { display: flex; align-items: center; gap: 8px; color: #9aa4b2; font-size: .9rem; font-weight: 600; }
+label.speed select { flex: 0 0 auto; min-width: 6.5rem; width: auto; }
+.save-as { display: grid; gap: 8px; margin-top: 10px; }
+.save-as textarea { width: 100%; min-width: 0; min-height: 4.5rem; padding: 8px 10px; border-radius: 8px;
+  border: 1px solid #30363d; background: #0d1117; color: inherit; font: inherit; resize: vertical;
+  overflow-wrap: anywhere; }
 .u-over .playhead { position: absolute; top: 0; width: 1px; height: 100%;
   background: #e6edf3; pointer-events: none; z-index: 2; }
 .crop .u-over { touch-action: none; }

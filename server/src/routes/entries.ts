@@ -6,10 +6,14 @@ import { pool } from '../db/client'
 import { assembleSeries, cropPcm, readWav, writeWav } from '../services/crop'
 import {
   clipFileUrl,
+  clipIdFromPath,
+  isAllowedCopyPath,
+  isModifiedPath,
   isUuid,
   modifiedCopyPath,
   removeClip,
   removeStored,
+  replaceClip,
   writeClip,
   writeStored,
 } from '../services/recording'
@@ -46,6 +50,22 @@ function parseId(raw: string): number | null {
 function asSamples(value: unknown): number[] {
   if (!Array.isArray(value)) return []
   return value.filter((n): n is number => typeof n === 'number' && Number.isFinite(n))
+}
+
+async function readUpload(req: FastifyRequest): Promise<{ meta: EntryUpload; audio: Buffer } | null> {
+  let metaRaw = ''
+  let audio: Buffer | null = null
+  for await (const part of req.parts()) {
+    if (part.type === 'file') {
+      const bytes = await part.toBuffer()
+      if (part.fieldname === 'audio') audio = bytes
+    } else if (part.fieldname === 'meta' && typeof part.value === 'string') {
+      metaRaw = part.value
+    }
+  }
+  const meta = readMeta(metaRaw)
+  if (!meta || !audio?.length) return null
+  return { meta, audio }
 }
 
 function readMeta(raw: string): EntryUpload | null {
@@ -259,8 +279,10 @@ export const entriesRoutes: FastifyPluginAsync = async (app) => {
       return { id, audioPath: row.audio_path }
     }
 
-    const dest = modifiedCopyPath(row.audio_path)
-    if (!dest) return reply.code(400).send({ error: 'invalid crop' })
+    const requested = typeof req.body?.audioPath === 'string' ? req.body.audioPath.trim() : ''
+    // Confirmed path, or clips/audio/modified/<id>/<id>.wav when the client omits one.
+    const dest = requested || modifiedCopyPath(row.audio_path)
+    if (!dest || !isAllowedCopyPath(dest)) return reply.code(400).send({ error: 'invalid crop' })
     const existing = await pool.query<{ id: number }>('SELECT id FROM entries WHERE audio_path = $1', [dest])
     await writeStored(dest, nextWav)
     const startedAt = new Date().toISOString()
@@ -286,20 +308,9 @@ export const entriesRoutes: FastifyPluginAsync = async (app) => {
 
   app.post('/entries', async (req, reply) => {
     if (!req.isMultipart()) return reply.code(400).send({ error: 'invalid entry' })
-
-    let metaRaw = ''
-    let audio: Buffer | null = null
-    for await (const part of req.parts()) {
-      if (part.type === 'file') {
-        const bytes = await part.toBuffer()
-        if (part.fieldname === 'audio') audio = bytes
-      } else if (part.fieldname === 'meta' && typeof part.value === 'string') {
-        metaRaw = part.value
-      }
-    }
-
-    const meta = readMeta(metaRaw)
-    if (!meta || !audio?.length) return reply.code(400).send({ error: 'invalid entry' })
+    const upload = await readUpload(req)
+    if (!upload) return reply.code(400).send({ error: 'invalid entry' })
+    const { meta, audio } = upload
 
     const uuid = meta.uuid.toLowerCase()
     let wrote = false
@@ -315,5 +326,32 @@ export const entriesRoutes: FastifyPluginAsync = async (app) => {
       if (wrote) await removeClip(uuid)
       throw err
     }
+  })
+
+  app.put<{ Params: { id: string } }>('/entries/:id', async (req, reply) => {
+    if (!req.isMultipart()) return reply.code(400).send({ error: 'invalid entry' })
+    const id = parseId(req.params.id)
+    if (id == null) return reply.code(404).send({ error: 'not found' })
+    const upload = await readUpload(req)
+    if (!upload) return reply.code(400).send({ error: 'invalid entry' })
+    const { meta, audio } = upload
+
+    const found = await pool.query<{ audio_path: string | null }>(
+      'SELECT audio_path FROM entries WHERE id = $1',
+      [id],
+    )
+    const audioPath = found.rows[0]?.audio_path ?? null
+    if (!found.rows[0]) return reply.code(404).send({ error: 'not found' })
+    const clipId = clipIdFromPath(audioPath)
+    if (!clipId || clipId !== meta.uuid.toLowerCase() || isModifiedPath(audioPath)) {
+      return reply.code(409).send({ error: 'not the open recording' })
+    }
+
+    await replaceClip(meta.uuid, audio)
+    await pool.query(
+      'UPDATE entries SET duration_s = $1, samples = $2, waveform = $3 WHERE id = $4',
+      [meta.durationS, JSON.stringify(meta.samples), JSON.stringify(meta.waveform), id],
+    )
+    return { id, audioPath }
   })
 }

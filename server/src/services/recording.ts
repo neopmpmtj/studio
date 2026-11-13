@@ -1,4 +1,12 @@
-import { mkdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, rename, rm, stat, writeFile } from 'node:fs/promises'
+import {
+  clipIdFromPath,
+  isAllowedCopyPath,
+  isLegacyModifiedPath,
+  isModifiedPath,
+} from '../../../shared/clip-path'
+
+export { clipIdFromPath, isAllowedCopyPath, isLegacyModifiedPath, isModifiedPath, modifiedCopyPath } from '../../../shared/clip-path'
 
 // server/src/services -> repo root is three levels up. cwd is server/, so don't use it.
 const clipsDir = new URL('../../../clips/audio/', import.meta.url)
@@ -10,31 +18,11 @@ export function isUuid(uuid: string) {
   return UUID_RE.test(uuid)
 }
 
-const CLIP_PATH_RE =
-  /^(modified\/)?clips\/audio\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/\2\.wav$/i
-
-export function clipIdFromPath(audioPath: string | null): string | null {
-  if (!audioPath) return null
-  const m = CLIP_PATH_RE.exec(audioPath)
-  if (!m || !isUuid(m[2])) return null
-  return m[2].toLowerCase()
-}
-
-export function isModifiedPath(audioPath: string | null): boolean {
-  return !!audioPath && audioPath.toLowerCase().startsWith('modified/')
-}
-
-// Save as keeps the source folders and filename, under a top-level modified/.
-export function modifiedCopyPath(audioPath: string | null): string | null {
-  const id = clipIdFromPath(audioPath)
-  if (!id) return null
-  return `modified/clips/audio/${id}/${id}.wav`
-}
-
 export function clipFileUrl(audioPath: string | null): URL | null {
+  if (!audioPath) return null
+  if (isAllowedCopyPath(audioPath) || isLegacyModifiedPath(audioPath)) return new URL(audioPath, repoRoot)
   const id = clipIdFromPath(audioPath)
-  if (!id || !audioPath) return null
-  if (isModifiedPath(audioPath)) return new URL(`modified/clips/audio/${id}/${id}.wav`, repoRoot)
+  if (!id || isModifiedPath(audioPath)) return null
   return new URL(`${id}/${id}.wav`, clipsDir)
 }
 
@@ -42,17 +30,42 @@ export function clipRelative(uuid: string) {
   return `clips/audio/${uuid}/${uuid}.wav`
 }
 
+// Write the wav beside the real file, then rename it into place. A crash during
+// the write leaves the previous wav untouched.
+async function commitWav(dir: URL, id: string, bytes: Buffer) {
+  await mkdir(dir, { recursive: true })
+  const tmp = new URL(`${id}.wav.tmp`, dir)
+  const dest = new URL(`${id}.wav`, dir)
+  try {
+    await writeFile(tmp, bytes)
+    await rename(tmp, dest)
+  } catch (err) {
+    await rm(tmp, { force: true })
+    throw err
+  }
+}
+
 export async function writeClip(uuid: string, bytes: Buffer) {
   const id = uuid.toLowerCase()
   if (!isUuid(id)) throw new Error('invalid uuid')
   const dir = new URL(`${id}/`, clipsDir)
-  await mkdir(dir, { recursive: true })
   try {
-    await writeFile(new URL(`${id}.wav`, dir), bytes)
+    await commitWav(dir, id, bytes)
   } catch (err) {
-    await rm(dir, { recursive: true, force: true })
+    try {
+      await stat(new URL(`${id}.wav`, dir))
+    } catch {
+      await rm(dir, { recursive: true, force: true })
+    }
     throw err
   }
+  return clipRelative(id)
+}
+
+export async function replaceClip(uuid: string, bytes: Buffer) {
+  const id = uuid.toLowerCase()
+  if (!isUuid(id)) throw new Error('invalid uuid')
+  await commitWav(new URL(`${id}/`, clipsDir), id, bytes)
   return clipRelative(id)
 }
 
@@ -70,11 +83,15 @@ export async function writeStored(audioPath: string, bytes: Buffer) {
 }
 
 export async function removeStored(audioPath: string | null) {
-  const id = clipIdFromPath(audioPath)
-  if (!id) return
-  if (isModifiedPath(audioPath)) {
-    await rm(new URL(`modified/clips/audio/${id}/`, repoRoot), { recursive: true, force: true })
+  if (!audioPath) return
+  if (isAllowedCopyPath(audioPath) || isLegacyModifiedPath(audioPath)) {
+    const fileUrl = clipFileUrl(audioPath)
+    if (!fileUrl) return
+    await rm(fileUrl, { force: true })
+    await rm(new URL('./', fileUrl), { force: true }).catch(() => {})
     return
   }
+  const id = clipIdFromPath(audioPath)
+  if (!id || isModifiedPath(audioPath)) return
   await removeClip(id)
 }

@@ -24,9 +24,14 @@ let capturing = false
 let windowMs = 20
 let generation = 0
 let starting: Promise<void> | null = null
+const CHECKPOINT_S = 30
+
 let sampleBudget = 0
 let capturedCount = 0
 let limitReached: (() => void) | null = null
+let checkpointEvery = 0
+let nextCheckpoint = 0
+let onCheckpoint: (() => void) | null = null
 
 const KEEP_SECONDS = 65 // a bit more than the max window setting
 const RMS_SAMPLES = 1024 // loudness stays on a fixed window when the waveform zooms
@@ -111,13 +116,20 @@ function connectCapture() {
   captureNode.port.onmessage = (e: MessageEvent<Float32Array>) => {
     if (!capturing) return
     pcmChunks.push(e.data)
-    if (sampleBudget <= 0) return
     capturedCount += e.data.length
-    if (capturedCount < sampleBudget) return
-    capturing = false
-    const done = limitReached
-    limitReached = null
-    if (done) queueMicrotask(done)
+    if (sampleBudget > 0 && capturedCount >= sampleBudget) {
+      capturing = false
+      const done = limitReached
+      limitReached = null
+      onCheckpoint = null
+      if (done) queueMicrotask(done)
+      return
+    }
+    if (checkpointEvery > 0 && capturedCount >= nextCheckpoint) {
+      nextCheckpoint += checkpointEvery
+      const save = onCheckpoint
+      if (save) queueMicrotask(save)
+    }
   }
   source.connect(captureNode)
   captureNode.connect(mute)
@@ -216,7 +228,7 @@ export function startListening(): Promise<void> {
   return starting
 }
 
-export async function startCapture(maxDurationS = 0, onLimit?: () => void) {
+export async function startCapture(maxDurationS = 0, onLimit?: () => void, onProgress?: () => void) {
   await startListening()
   if (!ctx || !source) throw new Error('Microphone did not start.')
   await ensureWorklet()
@@ -229,8 +241,27 @@ export async function startCapture(maxDurationS = 0, onLimit?: () => void) {
   sampleBudget = maxDurationS > 0 ? Math.round(maxDurationS * ctx.sampleRate) : 0
   capturedCount = 0
   limitReached = onLimit ?? null
+  checkpointEvery = Math.round(CHECKPOINT_S * ctx.sampleRate)
+  nextCheckpoint = checkpointEvery
+  onCheckpoint = onProgress ?? null
   connectCapture()
   capturing = true
+}
+
+export function snapshotCapture() {
+  if (!capturing || !ctx || pcmChunks.length === 0) return null
+  const pcm = concatPcm(pcmChunks)
+  if (pcm.length < 2) return null
+  const sampleRate = ctx.sampleRate
+  const durationS = pcm.length / sampleRate
+  const keep = Math.min(session.length, Math.floor(durationS / 0.05) + 1)
+  return {
+    samples: session.slice(0, keep),
+    durationS,
+    pcm,
+    sampleRate,
+    waveform: waveformPeaks(pcm, sampleRate),
+  }
 }
 
 export function stopCapture() {
@@ -238,6 +269,9 @@ export function stopCapture() {
   sampleBudget = 0
   capturedCount = 0
   limitReached = null
+  checkpointEvery = 0
+  nextCheckpoint = 0
+  onCheckpoint = null
   capturing = false
   disconnectCapture()
   let pcm = concatPcm(pcmChunks)
@@ -268,6 +302,9 @@ export function stopListening() {
   sampleBudget = 0
   capturedCount = 0
   limitReached = null
+  checkpointEvery = 0
+  nextCheckpoint = 0
+  onCheckpoint = null
   cancelAnimationFrame(raf)
   disconnectCapture()
   stream?.getTracks().forEach((t) => t.stop())

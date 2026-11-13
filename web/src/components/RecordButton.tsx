@@ -1,8 +1,16 @@
 import { useEffect, useRef, useState } from 'react'
 import { useStore } from '../store/settings'
-import { elapsed, startCapture, stopCapture } from '../audio/useMicrophone'
+import { elapsed, snapshotCapture, startCapture, stopCapture } from '../audio/useMicrophone'
 import { encodeWav } from '../audio/wav'
 import type { EntryUpload } from '../../../shared/types'
+
+type Snap = {
+  samples: number[]
+  durationS: number
+  pcm: Float32Array
+  sampleRate: number
+  waveform: number[]
+}
 
 export default function RecordButton({ onSaved }: { onSaved: () => void }) {
   const recording = useStore((s) => s.recording)
@@ -15,6 +23,8 @@ export default function RecordButton({ onSaved }: { onSaved: () => void }) {
   const lengthRef = useRef(length)
   const finishing = useRef(false)
   const take = useRef(0)
+  const entryIds = useRef(new Map<string, number>())
+  const saveTail = useRef(Promise.resolve())
   lengthRef.current = length
 
   useEffect(() => {
@@ -29,29 +39,78 @@ export default function RecordButton({ onSaved }: { onSaved: () => void }) {
     return () => window.clearInterval(id)
   }, [recording])
 
+  function queueSave(task: () => Promise<void>) {
+    const run = saveTail.current.then(task, task)
+    saveTail.current = run.then(
+      () => {},
+      () => {},
+    )
+    return run
+  }
+
+  function persist(uuid: string, started: string, snap: Snap) {
+    return queueSave(async () => {
+      let known = entryIds.current.get(uuid) ?? null
+      const send = async (id: number | null) => {
+        const meta: EntryUpload = {
+          startedAt: started,
+          durationS: snap.durationS,
+          samples: snap.samples,
+          waveform: snap.waveform,
+          uuid,
+        }
+        const body = new FormData()
+        body.append('meta', JSON.stringify(meta))
+        body.append('audio', encodeWav(snap.pcm, snap.sampleRate), `${uuid}.wav`)
+        const res = await fetch(id == null ? '/api/entries' : `/api/entries/${id}`, {
+          method: id == null ? 'POST' : 'PUT',
+          body,
+        })
+        if (res.status === 404 && id != null) {
+          entryIds.current.delete(uuid)
+          return send(null)
+        }
+        if (!res.ok) throw new Error('save failed')
+        if (id == null) {
+          const saved = (await res.json()) as { id: number }
+          entryIds.current.set(uuid, saved.id)
+        }
+      }
+      await send(known)
+      onSaved()
+    })
+  }
+
+  function checkpoint() {
+    if (finishing.current) return
+    const snap = snapshotCapture()
+    if (!snap) return
+    const uuid = clipId.current
+    const started = startedAt.current
+    void persist(uuid, started, snap).then(
+      () => {
+        if (clipId.current === uuid) setError('')
+      },
+      () => {
+        if (clipId.current === uuid) setError('Could not save the recording so far.')
+      },
+    )
+  }
+
   async function finish() {
     if (finishing.current) return
     const id = take.current
     finishing.current = true
-    const { samples, durationS, pcm, sampleRate, waveform } = stopCapture()
+    const snap = stopCapture()
+    const uuid = clipId.current
+    const started = startedAt.current
     setRecording(false)
     setShown(0)
     try {
-      const meta: EntryUpload = {
-        startedAt: startedAt.current,
-        durationS,
-        samples,
-        waveform,
-        uuid: clipId.current,
-      }
-      const body = new FormData()
-      body.append('meta', JSON.stringify(meta))
-      body.append('audio', encodeWav(pcm, sampleRate), `${clipId.current}.wav`)
-      const res = await fetch('/api/entries', { method: 'POST', body })
-      if (!res.ok) throw new Error('save failed')
-      onSaved()
+      await persist(uuid, started, snap)
+      if (clipId.current === uuid) setError('')
     } catch {
-      setError('Could not save the recording.')
+      if (clipId.current === uuid) setError('Could not save the recording.')
     } finally {
       if (take.current === id) finishing.current = false
     }
@@ -66,9 +125,13 @@ export default function RecordButton({ onSaved }: { onSaved: () => void }) {
       startedAt.current = new Date().toISOString()
       try {
         const seconds = lengthRef.current
-        await startCapture(seconds, () => {
-          void finish()
-        })
+        await startCapture(
+          seconds,
+          () => {
+            void finish()
+          },
+          () => checkpoint(),
+        )
         setRecording(true)
       } catch {
         setError('Microphone access was denied or is unavailable.')

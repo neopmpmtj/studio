@@ -3,6 +3,7 @@ import uPlot from 'uplot'
 import 'uplot/dist/uPlot.min.css'
 import type { EntryDetail, EntryPage, EntrySummary } from '../../../shared/types'
 import { useStore } from '../store/settings'
+import { nativeControlsList, PlaybackRate } from './PlaybackRate'
 
 const HEIGHT = 240
 const PAGE_SIZES = [20, 50, 100] as const
@@ -634,6 +635,11 @@ export default function RecordingsPage({
                   type="button"
                   className="text"
                   onClick={(ev) => choose(e.id, ev.shiftKey)}
+                  onDoubleClick={(ev) => {
+                    if (ev.shiftKey || ev.metaKey || ev.ctrlKey || ev.altKey) return
+                    if (!e.audioPath || (e.id === openId && fileMissing)) return
+                    go(null, `/recordings/edit?id=${e.id}`)
+                  }}
                 >
                   <span>{when(e.startedAt)}</span>
                   <span className="muted">{e.durationS.toFixed(1)} s</span>
@@ -707,10 +713,16 @@ export default function RecordingsPage({
             )}
           </>
         )}
+        {detail?.audioPath && !fileMissing && (
+          <div className="row">
+            <PlaybackRate audioRef={audioRef} />
+          </div>
+        )}
         <audio
           ref={audioRef}
           className="clip"
           controls
+          controlsList={nativeControlsList}
           hidden={!detail?.audioPath || fileMissing}
           onEnded={onEnded}
           onError={() => {
