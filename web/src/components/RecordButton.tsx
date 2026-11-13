@@ -25,13 +25,14 @@ export default function RecordButton({ onSaved }: { onSaved: () => void }) {
       return
     }
 
-    const { samples, durationS, pcm, sampleRate } = stopCapture()
+    const { samples, durationS, pcm, sampleRate, waveform } = stopCapture()
     setRecording(false)
     try {
       const meta: EntryUpload = {
         startedAt: startedAt.current,
         durationS,
         samples,
+        waveform,
         uuid: clipId.current,
       }
       const body = new FormData()

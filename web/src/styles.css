@@ -24,17 +24,41 @@ button { cursor: pointer; border: 0; border-radius: 10px; padding: 12px 20px; fo
 button.stop { background: #da3633; }
 button:disabled { opacity: .5; cursor: default; }
 button.small { padding: 6px 12px; font-size: .85rem; background: #30363d; }
+button.small.stop { background: #da3633; }
+button.text { background: transparent; color: inherit; font: inherit; font-weight: 400;
+  padding: 0; border-radius: 0; text-align: left; flex: 1; display: flex;
+  justify-content: space-between; gap: 8px; }
 .graph { width: 100%; margin-bottom: 12px; }
 .wave { margin-bottom: 20px; }
 .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .row + .row { margin-top: 10px; }
-input[type=text], select { flex: 1; min-width: 120px; padding: 8px 10px; border-radius: 8px;
+input[type=text], input[type=number], select { flex: 1; min-width: 120px; padding: 8px 10px; border-radius: 8px;
   border: 1px solid #30363d; background: #0d1117; color: inherit; font: inherit; }
+input.n { flex: 0 0 5rem; min-width: 0; width: 5rem; }
 .field select { width: 100%; }
 a.nav { color: #9aa4b2; text-decoration: none; font-weight: 600; }
-a.nav:hover { color: #e6edf3; }
+a.nav:hover, a.nav.active { color: #e6edf3; }
 ul { list-style: none; padding: 0; margin: 12px 0; display: grid; gap: 6px; }
 li { display: flex; justify-content: space-between; gap: 8px; padding: 6px 10px;
   background: #0d1117; border-radius: 8px; }
 .error { color: #ff7b7b; margin: 8px 0 0; }
 .muted { color: #9aa4b2; font-size: .9rem; }
+.recordings { grid-column: 1 / -1; display: grid; gap: 16px; align-items: start;
+  grid-template-columns: minmax(280px, 380px) 1fr; }
+.rec-list { max-height: 520px; overflow: auto; }
+.rec-list li { align-items: center; }
+.rec-list li.open { box-shadow: inset 0 0 0 1px #388bfd; }
+.rec-list li label { display: flex; align-items: center; gap: 8px; }
+.rec-list a { color: inherit; text-decoration: none; }
+.rec-list a:hover { text-decoration: underline; }
+audio.clip { width: 100%; margin: 8px 0 12px; }
+.u-over .playhead { position: absolute; top: 0; width: 1px; height: 100%;
+  background: #e6edf3; pointer-events: none; z-index: 2; }
+.crop .u-over { touch-action: none; }
+.u-over .crop-dim { position: absolute; top: 0; height: 100%; background: rgba(13, 17, 23, 0.55); pointer-events: none; z-index: 1; }
+.u-over .crop-select { position: absolute; top: 0; height: 100%; background: rgba(56, 139, 253, 0.35); pointer-events: none; z-index: 1; }
+.u-over .crop-handle { position: absolute; top: 0; width: 14px; height: 100%; margin-left: -7px; cursor: ew-resize; z-index: 3; }
+.u-over .crop-handle::after { content: ''; position: absolute; left: 6px; top: 0; width: 2px; height: 100%; background: #e6edf3; }
+@media (max-width: 800px) {
+  .recordings { grid-template-columns: 1fr; }
+}

@@ -8,7 +8,9 @@ CREATE TABLE IF NOT EXISTS entries (
   started_at  timestamptz NOT NULL,
   duration_s  double precision NOT NULL,
   samples     jsonb NOT NULL,
-  audio_path  text
+  audio_path  text,
+  waveform    jsonb
 );
 
 ALTER TABLE entries ADD COLUMN IF NOT EXISTS audio_path text;
+ALTER TABLE entries ADD COLUMN IF NOT EXISTS waveform jsonb;

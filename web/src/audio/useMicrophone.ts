@@ -29,6 +29,10 @@ const KEEP_SECONDS = 65 // a bit more than the max window setting
 const RMS_SAMPLES = 1024 // loudness stays on a fixed window when the waveform zooms
 const EMPTY = new Float32Array(0)
 
+// Saved waveform: one low and one high per slice, instead of the device rate.
+// 10 ms is 200 numbers per second. At 48 kHz that is 480 samples folded into 2.
+export const WAVEFORM_SLICE_MS = 10
+
 export const elapsed = () => (performance.now() - startMs) / 1000
 export const getLive = () => live
 export const isListening = () => ctx !== null
@@ -59,6 +63,23 @@ export function getWaveform(): Float32Array {
   if (!analyser || !ctx || buf.length === 0) return EMPTY
   const count = Math.min(buf.length, Math.max(1, Math.round((ctx.sampleRate * windowMs) / 1000)))
   return buf.subarray(buf.length - count)
+}
+
+export function waveformPeaks(pcm: Float32Array, sampleRate: number): number[] {
+  const slice = Math.max(1, Math.round((sampleRate * WAVEFORM_SLICE_MS) / 1000))
+  const out: number[] = []
+  for (let i = 0; i < pcm.length; i += slice) {
+    const end = Math.min(pcm.length, i + slice)
+    let lo = Infinity
+    let hi = -Infinity
+    for (let j = i; j < end; j++) {
+      const v = pcm[j]
+      if (v < lo) lo = v
+      if (v > hi) hi = v
+    }
+    out.push(Math.round(lo * 10000) / 10000, Math.round(hi * 10000) / 10000)
+  }
+  return out
 }
 
 function concatPcm(chunks: Float32Array[]) {
@@ -203,7 +224,14 @@ export function stopCapture() {
   disconnectCapture()
   const pcm = concatPcm(pcmChunks)
   pcmChunks = []
-  const result = { samples: session, durationS: elapsed(), pcm, sampleRate: ctx?.sampleRate ?? 48000 }
+  const sampleRate = ctx?.sampleRate ?? 48000
+  const result = {
+    samples: session,
+    durationS: elapsed(),
+    pcm,
+    sampleRate,
+    waveform: waveformPeaks(pcm, sampleRate),
+  }
   session = []
   return result
 }

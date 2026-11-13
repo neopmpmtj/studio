@@ -60,5 +60,10 @@ export default function LiveGraph() {
     }
   }, [])
 
-  return <div ref={box} className="graph" />
+  return (
+    <div className="wave">
+      <h2>Loudness</h2>
+      <div ref={box} className="graph" />
+    </div>
+  )
 }

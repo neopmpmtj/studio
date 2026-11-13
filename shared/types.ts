@@ -60,6 +60,7 @@ export interface NewEntry {
   startedAt: string
   durationS: number
   samples: number[]
+  waveform: number[]
 }
 
 export interface EntryUpload extends NewEntry {
@@ -75,4 +76,40 @@ export interface EntrySummary {
 
 export interface EntryDetail extends EntrySummary {
   samples: number[]
+  waveform: number[] | null
+}
+
+export interface EntryPage {
+  entries: EntrySummary[]
+  total: number
+}
+
+export interface KeepSpan {
+  start: number
+  end: number
+}
+
+export interface CropRequest {
+  mode: 'overwrite' | 'copy'
+  keep: KeepSpan[]
+}
+
+// Trim plus middle cuts, in original-timeline seconds. Cuts may overlap.
+export function keptSpans(trimStart: number, trimEnd: number, cuts: KeepSpan[]): KeepSpan[] {
+  const start = Math.min(trimStart, trimEnd)
+  const end = Math.max(trimStart, trimEnd)
+  if (!(end > start)) return []
+  const sorted = cuts
+    .map((cut) => ({ start: Math.max(cut.start, start), end: Math.min(cut.end, end) }))
+    .filter((cut) => cut.end > cut.start)
+    .sort((a, b) => a.start - b.start)
+  const out: KeepSpan[] = []
+  let cursor = start
+  for (const cut of sorted) {
+    if (cut.start > cursor) out.push({ start: cursor, end: Math.min(cut.start, end) })
+    cursor = Math.max(cursor, cut.end)
+    if (cursor >= end) break
+  }
+  if (cursor < end) out.push({ start: cursor, end })
+  return out
 }

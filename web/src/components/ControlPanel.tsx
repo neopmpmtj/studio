@@ -3,9 +3,9 @@ import { BUILTIN_PRESETS, SETTING_LIMITS, type Preset, type Settings } from '../
 import { useStore } from '../store/settings'
 
 const FIELDS: { key: keyof Settings; label: string; step: number }[] = [
-  { key: 'gain', label: 'Gain', step: 0.1 },
-  { key: 'windowSeconds', label: 'Time window (s)', step: 1 },
-  { key: 'smoothing', label: 'Smoothing', step: 0.05 },
+  { key: 'gain', label: 'Loudness gain', step: 0.1 },
+  { key: 'windowSeconds', label: 'Loudness window (s)', step: 1 },
+  { key: 'smoothing', label: 'Loudness smoothing', step: 0.05 },
 ]
 
 function same(a: Settings, b: Settings) {

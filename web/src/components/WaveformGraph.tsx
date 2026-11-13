@@ -178,11 +178,11 @@ export default function WaveformGraph() {
         >
           {listening ? 'Stop listening' : 'Listen'}
         </button>
-        <button className="small" onClick={() => setWindow((ms) => clamp(ms * 2, MIN_MS, MAX_MS))} title="Zoom out">
+        <button className="small" onClick={() => setWindow((ms) => clamp(ms * 0.5, MIN_MS, MAX_MS))} title="Zoom in">
           Time −
         </button>
         <span className="muted">{formatMs(windowMs)}</span>
-        <button className="small" onClick={() => setWindow((ms) => clamp(ms * 0.5, MIN_MS, MAX_MS))} title="Zoom in">
+        <button className="small" onClick={() => setWindow((ms) => clamp(ms * 2, MIN_MS, MAX_MS))} title="Zoom out">
           Time +
         </button>
         <button className="small" onClick={() => setAmp((a) => clamp(a * 2, MIN_AMP, MAX_AMP))} title="Zoom out">
