@@ -24,6 +24,7 @@ button { cursor: pointer; border: 0; border-radius: 10px; padding: 12px 20px; fo
 button.stop { background: #da3633; }
 button:disabled { opacity: .5; cursor: default; }
 button.small { padding: 6px 12px; font-size: .85rem; background: #30363d; }
+button.small[aria-pressed="true"] { background: #388bfd; }
 button.small.stop { background: #da3633; }
 button.text { background: transparent; color: inherit; font: inherit; font-weight: 400;
   padding: 0; border-radius: 0; text-align: left; flex: 1; display: flex;

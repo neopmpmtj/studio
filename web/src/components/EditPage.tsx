@@ -11,7 +11,11 @@ const MIN_ZOOM = 0.05
 
 type ChartHandle = {
   reveal: (start: number, end: number) => void
+  zoomTo: (start: number, end: number) => void
 }
+
+type EditorMode = 'normal' | 'fast'
+type FastTool = 'delete' | 'play' | 'select' | 'zoom'
 
 type SelectionMark = { index: number; start: number; end: number }
 
@@ -241,6 +245,24 @@ const CropChart = forwardRef<
         return
       }
       applyViewRef.current({ start: a, end: Math.min(limit, b) })
+    },
+    zoomTo(start: number, end: number) {
+      const limit = Math.max(maxTRef.current, 0.001)
+      const lo = Math.max(0, Math.min(Math.min(start, end), limit))
+      const hi = Math.max(0, Math.min(Math.max(start, end), limit))
+      const width = Math.min(limit, Math.max(hi - lo, Math.min(MIN_ZOOM, limit)))
+      const mid = (lo + hi) / 2
+      let left = mid - width / 2
+      let right = left + width
+      if (left < 0) {
+        left = 0
+        right = width
+      }
+      if (right > limit) {
+        right = limit
+        left = Math.max(0, right - width)
+      }
+      applyViewRef.current({ start: left, end: right })
     },
   }))
 
@@ -511,6 +533,8 @@ export default function EditPage({
   const [wav, setWav] = useState<WavPcm | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [editorMode, setEditorMode] = useState<EditorMode>('normal')
+  const [fastTool, setFastTool] = useState<FastTool>('select')
   const audioRef = useRef<HTMLAudioElement>(null)
   const chartRef = useRef<ChartHandle>(null)
   const playUntil = useRef<number | null>(null)
@@ -537,6 +561,8 @@ export default function EditPage({
     pastRef.current = []
     setSnap(EMPTY)
     setPast([])
+    setEditorMode('normal')
+    setFastTool('select')
     fetch(`/api/entries/${id}`, { signal: ac.signal })
       .then(async (r) => {
         if (!r.ok) throw new Error('missing')
@@ -669,11 +695,28 @@ export default function EditPage({
   }
 
   function onSelect(previewStart: number, previewEnd: number) {
+    const start = Math.min(previewStart, previewEnd)
+    const end = Math.max(previewStart, previewEnd)
+    if (editorMode === 'fast' && fastTool === 'zoom') {
+      chartRef.current?.zoomTo(start, end)
+      return
+    }
+    if (end - start < MIN_CUT) return
+    if (editorMode === 'fast' && fastTool === 'play') {
+      playSpan(start, end)
+      return
+    }
     const cur = snapRef.current
     const base = keptSpans(cur.trim.start, cur.trim.end, cur.applied)
-    const a = originalAt(Math.min(previewStart, previewEnd), base)
-    const b = originalAt(Math.max(previewStart, previewEnd), base)
+    const a = originalAt(start, base)
+    const b = originalAt(end, base)
     if (b - a < MIN_CUT) return
+    if (editorMode === 'fast' && fastTool === 'delete') {
+      const applied = mergeCuts([...cur.applied, { start: a, end: b }])
+      if (keptSpans(cur.trim.start, cur.trim.end, applied).length === 0) return
+      push({ trim: cur.trim, applied, pending: cur.pending })
+      return
+    }
     const pending = mergeCuts([...cur.pending, { start: a, end: b }])
     if (sameSpans(pending, cur.pending)) return
     push({ trim: cur.trim, applied: cur.applied, pending })
@@ -827,6 +870,30 @@ export default function EditPage({
           <h2>{when(detail.startedAt)}</h2>
           <p className="muted">{detail.durationS.toFixed(1)} s</p>
           {fileMissing && <p className="error">Audio file is missing.</p>}
+          <div className="row">
+            <button type="button" className="small" aria-pressed={editorMode === 'normal'} onClick={() => setEditorMode('normal')}>
+              Normal
+            </button>
+            <button type="button" className="small" aria-pressed={editorMode === 'fast'} onClick={() => setEditorMode('fast')}>
+              Move fast
+            </button>
+          </div>
+          {editorMode === 'fast' && (
+            <div className="row">
+              <button type="button" className="small" aria-pressed={fastTool === 'delete'} onClick={() => setFastTool('delete')}>
+                Delete
+              </button>
+              <button type="button" className="small" aria-pressed={fastTool === 'play'} onClick={() => setFastTool('play')}>
+                Play
+              </button>
+              <button type="button" className="small" aria-pressed={fastTool === 'select'} onClick={() => setFastTool('select')}>
+                Select
+              </button>
+              <button type="button" className="small" aria-pressed={fastTool === 'zoom'} onClick={() => setFastTool('zoom')}>
+                Zoom
+              </button>
+            </div>
+          )}
           <CropChart
             ref={chartRef}
             audioRef={audioRef}
@@ -856,7 +923,15 @@ export default function EditPage({
               ))}
             </ul>
           ) : (
-            <p className="muted">Drag across the chart to select a section. Remove drops it from the wave and the player. Drag the edges to trim.</p>
+            <p className="muted">
+              {editorMode === 'fast' && fastTool === 'delete'
+                ? 'Drag across the chart. The section is removed when you release.'
+                : editorMode === 'fast' && fastTool === 'play'
+                  ? 'Drag across the chart. The section plays when you release, then the selection clears.'
+                  : editorMode === 'fast' && fastTool === 'zoom'
+                    ? 'Drag across the chart. The view fits that span when you release.'
+                    : 'Drag across the chart to select a section. Remove drops it from the wave and the player. Drag the edges to trim.'}
+            </p>
           )}
           <p className="muted">Kept {formatSec(keptS)}</p>
           <div className="row">
