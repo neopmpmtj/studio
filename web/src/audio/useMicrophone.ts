@@ -24,6 +24,9 @@ let capturing = false
 let windowMs = 20
 let generation = 0
 let starting: Promise<void> | null = null
+let sampleBudget = 0
+let capturedCount = 0
+let limitReached: (() => void) | null = null
 
 const KEEP_SECONDS = 65 // a bit more than the max window setting
 const RMS_SAMPLES = 1024 // loudness stays on a fixed window when the waveform zooms
@@ -106,7 +109,15 @@ function connectCapture() {
   mute = ctx.createGain()
   mute.gain.value = 0
   captureNode.port.onmessage = (e: MessageEvent<Float32Array>) => {
-    if (capturing) pcmChunks.push(e.data)
+    if (!capturing) return
+    pcmChunks.push(e.data)
+    if (sampleBudget <= 0) return
+    capturedCount += e.data.length
+    if (capturedCount < sampleBudget) return
+    capturing = false
+    const done = limitReached
+    limitReached = null
+    if (done) queueMicrotask(done)
   }
   source.connect(captureNode)
   captureNode.connect(mute)
@@ -205,7 +216,7 @@ export function startListening(): Promise<void> {
   return starting
 }
 
-export async function startCapture() {
+export async function startCapture(maxDurationS = 0, onLimit?: () => void) {
   await startListening()
   if (!ctx || !source) throw new Error('Microphone did not start.')
   await ensureWorklet()
@@ -215,19 +226,34 @@ export async function startCapture() {
   level = 0
   lastSessionT = -1
   startMs = performance.now()
+  sampleBudget = maxDurationS > 0 ? Math.round(maxDurationS * ctx.sampleRate) : 0
+  capturedCount = 0
+  limitReached = onLimit ?? null
   connectCapture()
   capturing = true
 }
 
 export function stopCapture() {
+  const budget = sampleBudget
+  sampleBudget = 0
+  capturedCount = 0
+  limitReached = null
   capturing = false
   disconnectCapture()
-  const pcm = concatPcm(pcmChunks)
+  let pcm = concatPcm(pcmChunks)
   pcmChunks = []
   const sampleRate = ctx?.sampleRate ?? 48000
+  let durationS = elapsed()
+  let samples = session
+  if (budget > 0 && pcm.length >= budget) {
+    pcm = pcm.subarray(0, budget)
+    durationS = budget / sampleRate
+    const keep = Math.min(samples.length, Math.floor(durationS / 0.05) + 1)
+    samples = samples.slice(0, keep)
+  }
   const result = {
-    samples: session,
-    durationS: elapsed(),
+    samples,
+    durationS,
     pcm,
     sampleRate,
     waveform: waveformPeaks(pcm, sampleRate),
@@ -239,6 +265,9 @@ export function stopCapture() {
 export function stopListening() {
   generation++
   capturing = false
+  sampleBudget = 0
+  capturedCount = 0
+  limitReached = null
   cancelAnimationFrame(raf)
   disconnectCapture()
   stream?.getTracks().forEach((t) => t.stop())

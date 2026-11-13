@@ -523,6 +523,7 @@ export default function EditPage({
   const [fileMissing, setFileMissing] = useState(false)
   const [snap, setSnap] = useState<Snap>(EMPTY)
   const [past, setPast] = useState<Snap[]>([])
+  const [future, setFuture] = useState<Snap[]>([])
   const [wav, setWav] = useState<WavPcm | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -538,10 +539,12 @@ export default function EditPage({
   const armingPlay = useRef(false)
   const snapRef = useRef(snap)
   const pastRef = useRef(past)
+  const futureRef = useRef(future)
   const previewUrl = useRef<string | null>(null)
   const clipRef = useRef<KeepSpan[] | null>(null)
   snapRef.current = snap
   pastRef.current = past
+  futureRef.current = future
 
   useEffect(() => {
     if (!valid) return
@@ -553,8 +556,10 @@ export default function EditPage({
     setWav(null)
     snapRef.current = EMPTY
     pastRef.current = []
+    futureRef.current = []
     setSnap(EMPTY)
     setPast([])
+    setFuture([])
     setEditorMode('normal')
     setFastTool('play')
     clipRef.current = null
@@ -569,8 +574,10 @@ export default function EditPage({
         const initial = { pieces: [{ start: 0, end: row.durationS }], pending: [] }
         snapRef.current = initial
         pastRef.current = []
+        futureRef.current = []
         setSnap(initial)
         setPast([])
+        setFuture([])
         setDetail(row)
         if (!row.audioPath) setFileMissing(true)
       })
@@ -657,8 +664,10 @@ export default function EditPage({
     const cur = snapRef.current
     if (sameSnap(cur, next)) return
     pastRef.current = [...pastRef.current, cur]
+    futureRef.current = []
     snapRef.current = next
     setPast(pastRef.current)
+    setFuture(futureRef.current)
     setSnap(next)
   }
 
@@ -667,9 +676,23 @@ export default function EditPage({
     if (stack.length === 0) return
     const prev = stack[stack.length - 1]
     pastRef.current = stack.slice(0, -1)
+    futureRef.current = [...futureRef.current, snapRef.current]
     snapRef.current = prev
     setPast(pastRef.current)
+    setFuture(futureRef.current)
     setSnap(prev)
+  }
+
+  function redo() {
+    const stack = futureRef.current
+    if (stack.length === 0) return
+    const next = stack[stack.length - 1]
+    futureRef.current = stack.slice(0, -1)
+    pastRef.current = [...pastRef.current, snapRef.current]
+    snapRef.current = next
+    setPast(pastRef.current)
+    setFuture(futureRef.current)
+    setSnap(next)
   }
 
   function onTrim(previewStart: number, previewEnd: number) {
@@ -1002,6 +1025,9 @@ export default function EditPage({
           <div className="row">
             <button type="button" className="small" disabled={past.length === 0 || busy} onClick={undo}>
               Undo
+            </button>
+            <button type="button" className="small" disabled={future.length === 0 || busy} onClick={redo}>
+              Redo
             </button>
             <button type="button" className="small" disabled={busy} onClick={() => go(null, back)}>
               Cancel
