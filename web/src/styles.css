@@ -61,6 +61,25 @@ label.speed select { flex: 0 0 auto; min-width: 6.5rem; width: auto; }
   overflow-wrap: anywhere; }
 .u-over .playhead { position: absolute; top: 0; width: 1px; height: 100%;
   background: #e6edf3; pointer-events: none; z-index: 2; }
+.crop-scroll {
+  position: relative;
+  height: 14px;
+  margin: -6px 0 12px;
+  background: #222a35;
+  border-radius: 7px;
+  touch-action: none;
+  user-select: none;
+}
+.crop-scroll:focus-visible { outline: 2px solid #388bfd; outline-offset: 2px; }
+.crop-scroll-thumb {
+  position: absolute;
+  top: 2px;
+  height: 10px;
+  border-radius: 5px;
+  background: #9aa4b2;
+  cursor: grab;
+}
+.crop-scroll-thumb:active { cursor: grabbing; }
 .crop .u-over { touch-action: none; }
 .u-over .crop-dim { position: absolute; top: 0; height: 100%; background: rgba(13, 17, 23, 0.55); pointer-events: none; z-index: 1; }
 .u-over .crop-select { position: absolute; top: 0; height: 100%; background: rgba(56, 139, 253, 0.35); pointer-events: none; z-index: 1; }

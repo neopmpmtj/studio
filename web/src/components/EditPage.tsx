@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState, type MouseEvent, type RefObject } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type PointerEvent as ReactPointerEvent, type RefObject } from 'react'
 import uPlot from 'uplot'
 import 'uplot/dist/uPlot.min.css'
 import { assembleSeries, cropPcm, cutPieces, insertPieces, parseWavPcm, piecesDuration, takePieces } from '../../../shared/crop'
@@ -10,6 +10,7 @@ import { nativeControlsList, PlaybackRate } from './PlaybackRate'
 const HEIGHT = 240
 const MIN_CUT = 0.02
 const MIN_ZOOM = 0.05
+const MIN_SCROLL_THUMB = 28
 
 type ChartHandle = {
   reveal: (start: number, end: number) => void
@@ -118,6 +119,16 @@ function wavBlob(pcm: Uint8Array, sampleRate: number) {
   return new Blob([out], { type: 'audio/wav' })
 }
 
+function scrollGeom(start: number, end: number, maxT: number, track: number) {
+  const limit = Math.max(maxT, 0.001)
+  const span = Math.min(limit, Math.max(end - start, 0.001))
+  const thumb = track > 0 ? Math.min(track, Math.max(MIN_SCROLL_THUMB, (track * span) / limit)) : 0
+  const travel = Math.max(0, track - thumb)
+  const maxStart = Math.max(0, limit - span)
+  const left = maxStart > 0 ? (travel * Math.max(0, start)) / maxStart : 0
+  return { limit, span, thumb, travel, maxStart, left, zoomed: span < limit - 1e-3 && track > 0 }
+}
+
 function flatSeries(maxT: number, title: string, stroke: string): Drawn {
   return { xs: [0, maxT], ys: [0, 0], yMin: title === 'Loudness' ? 0 : -1, yMax: 1, title, stroke, width: title === 'Loudness' ? 2 : 1 }
 }
@@ -195,6 +206,8 @@ const CropChart = forwardRef<
   const [view, setView] = useState({ start: 0, end: maxT })
   const [dragTrim, setDragTrim] = useState<{ start: number; end: number } | null>(null)
   const [dragSel, setDragSel] = useState<SelectionMark | null>(null)
+  const [lane, setLane] = useState({ left: 0, width: 0 })
+  const scrollDrag = useRef<{ originX: number; originStart: number; travel: number; span: number; limit: number } | null>(null)
   seriesRef.current = series
   maxTRef.current = maxT
   selectionsRef.current = selections
@@ -212,6 +225,16 @@ const CropChart = forwardRef<
   }
   const applyViewRef = useRef(applyView)
   applyViewRef.current = applyView
+
+  const measureLane = () => {
+    const plot = plotRef.current
+    if (!plot) return
+    const left = plot.bbox.left
+    const width = plot.bbox.width
+    setLane((prev) => (prev.left === left && prev.width === width ? prev : { left, width }))
+  }
+  const measureLaneRef = useRef(measureLane)
+  measureLaneRef.current = measureLane
 
   useImperativeHandle(ref, () => ({
     reveal(start: number, end: number) {
@@ -278,6 +301,7 @@ const CropChart = forwardRef<
       el,
     )
     plotRef.current = plot
+    measureLaneRef.current()
     const over = plot.over
     const draft = document.createElement('div')
     draft.className = 'crop-select draft'
@@ -401,6 +425,7 @@ const CropChart = forwardRef<
 
     const ro = new ResizeObserver(() => {
       plot.setSize({ width: el.clientWidth || 600, height: HEIGHT })
+      measureLaneRef.current()
       placeHead()
       over.dispatchEvent(new Event('crop-resize'))
     })
@@ -438,6 +463,7 @@ const CropChart = forwardRef<
       plot.setScale('x', { min: shown.start, max: shown.end })
       plot.setScale('y', { min: series.yMin, max: series.yMax })
     })
+    measureLaneRef.current()
   }, [ready, series, maxT])
 
   useEffect(() => {
@@ -498,10 +524,83 @@ const CropChart = forwardRef<
     }
   }, [ready, dragTrim, dragSel, selections, maxT, view])
 
+  const geom = scrollGeom(view.start, view.end, maxT, lane.width)
+
+  function panTo(start: number, span: number, limit: number) {
+    const width = Math.min(limit, Math.max(span, 0.001))
+    const maxStart = Math.max(0, limit - width)
+    const left = Math.max(0, Math.min(start, maxStart))
+    const cur = viewRef.current
+    if (Math.abs(left - cur.start) < 1e-4 && Math.abs(left + width - cur.end) < 1e-4) return
+    applyViewRef.current({ start: left, end: left + width })
+  }
+
+  function onScrollPointerDown(e: ReactPointerEvent<HTMLDivElement>) {
+    if (e.button !== 0) return
+    const track = e.currentTarget
+    const localX = e.clientX - track.getBoundingClientRect().left
+    const onThumb = localX >= geom.left && localX <= geom.left + geom.thumb
+    track.focus()
+    if (!onThumb) {
+      panTo(view.start + (localX < geom.left ? -geom.span : geom.span), geom.span, geom.limit)
+      return
+    }
+    scrollDrag.current = {
+      originX: e.clientX,
+      originStart: view.start,
+      travel: geom.travel,
+      span: geom.span,
+      limit: geom.limit,
+    }
+    track.setPointerCapture(e.pointerId)
+  }
+
+  function onScrollPointerMove(e: ReactPointerEvent<HTMLDivElement>) {
+    const drag = scrollDrag.current
+    if (!drag) return
+    const maxStart = Math.max(0, drag.limit - drag.span)
+    const next = drag.travel > 0 ? drag.originStart + ((e.clientX - drag.originX) / drag.travel) * maxStart : drag.originStart
+    panTo(next, drag.span, drag.limit)
+  }
+
+  function onScrollPointerUp(e: ReactPointerEvent<HTMLDivElement>) {
+    if (!scrollDrag.current) return
+    scrollDrag.current = null
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId)
+  }
+
+  function onScrollKeyDown(e: KeyboardEvent<HTMLDivElement>) {
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
+    e.preventDefault()
+    const step = geom.span * 0.1
+    panTo(view.start + (e.key === 'ArrowLeft' ? -step : step), geom.span, geom.limit)
+  }
+
   return (
     <div className="crop">
       <h2>{series.title}</h2>
       <div ref={box} className="graph" />
+      {geom.zoomed && (
+        <div
+          className="crop-scroll"
+          style={{ marginLeft: lane.left, width: lane.width }}
+          role="scrollbar"
+          aria-orientation="horizontal"
+          aria-valuemin={0}
+          aria-valuemax={geom.maxStart}
+          aria-valuenow={Math.min(geom.maxStart, Math.max(0, view.start))}
+          aria-valuetext={`${formatSec(view.start)} – ${formatSec(view.end)}`}
+          aria-label="Scroll through the recording"
+          tabIndex={0}
+          onPointerDown={onScrollPointerDown}
+          onPointerMove={onScrollPointerMove}
+          onPointerUp={onScrollPointerUp}
+          onPointerCancel={onScrollPointerUp}
+          onKeyDown={onScrollKeyDown}
+        >
+          <div className="crop-scroll-thumb" style={{ width: geom.thumb, transform: `translateX(${geom.left}px)` }} />
+        </div>
+      )}
     </div>
   )
 })
